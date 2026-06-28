@@ -1,0 +1,92 @@
+---
+# HPA using vLLM's native queue depth metric via Prometheus Adapter
+# Scales on: number of requests waiting in vLLM queue
+# This is more accurate than CPU/memory for LLM inference
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: vllm-inference-hpa
+  namespace: inference
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: vllm-inference
+
+  minReplicas: 2
+  maxReplicas: 8
+
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60    # Wait 1m before scaling up
+      policies:
+      - type: Pods
+        value: 1                        # Add 1 pod at a time
+        periodSeconds: 120              # No faster than every 2 min
+                                        # (GPU pods take time to start)
+    scaleDown:
+      stabilizationWindowSeconds: 300   # Wait 5m before scaling down
+      policies:
+      - type: Pods
+        value: 1                        # Remove 1 pod at a time
+        periodSeconds: 300
+
+  metrics:
+  # Scale on queue depth — primary signal
+  - type: External
+    external:
+      metric:
+        name: vllm_request_queue_length
+        selector:
+          matchLabels:
+            namespace: inference
+            app: vllm-inference
+      target:
+        type: AverageValue
+        averageValue: "5"   # Target: < 5 requests waiting per pod
+
+  # Secondary: scale if GPU VRAM > 88% (approaching OOM)
+  - type: External
+    external:
+      metric:
+        name: vllm_gpu_cache_usage_perc
+        selector:
+          matchLabels:
+            namespace: inference
+      target:
+        type: AverageValue
+        averageValue: "850m"  # 85% (millis notation: 850m = 0.850)
+
+---
+# Prometheus Adapter ConfigMap
+# Configures custom metrics from Prometheus for use in HPA
+# Requires: kube-prometheus-stack or prometheus-adapter installed
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-adapter-config
+  namespace: monitoring
+data:
+  config.yaml: |
+    rules:
+    - seriesQuery: 'vllm:request_queue_length{namespace!="",pod!=""}'
+      resources:
+        overrides:
+          namespace: {resource: "namespace"}
+          pod: {resource: "pod"}
+      name:
+        matches: "^(.*)$"
+        as: "vllm_request_queue_length"
+      metricsQuery: 'avg(vllm:request_queue_length{<<.LabelMatchers>>})'
+
+    - seriesQuery: 'vllm:gpu_cache_usage_perc{namespace!="",pod!=""}'
+      resources:
+        overrides:
+          namespace: {resource: "namespace"}
+          pod: {resource: "pod"}
+      name:
+        matches: "^(.*)$"
+        as: "vllm_gpu_cache_usage_perc"
+      metricsQuery: 'avg(vllm:gpu_cache_usage_perc{<<.LabelMatchers>>})'

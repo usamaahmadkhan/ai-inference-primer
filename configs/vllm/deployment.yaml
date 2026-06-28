@@ -1,0 +1,180 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-inference
+  namespace: inference
+  labels:
+    app: vllm-inference
+    version: v1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: vllm-inference
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0        # Never take a pod down before new one is ready
+  template:
+    metadata:
+      labels:
+        app: vllm-inference
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      # Only schedule on GPU nodes
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+
+      # Prefer nodes with specific GPU type
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: nvidia.com/gpu.product
+                operator: In
+                values:
+                - A10G
+                - A100-SXM4-80GB
+        # Spread pods across nodes (no two replicas on same node)
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app: vllm-inference
+            topologyKey: kubernetes.io/hostname
+
+      # Allow time for model to load before first probe
+      terminationGracePeriodSeconds: 60
+
+      containers:
+      - name: vllm
+        image: vllm/vllm-openai:v0.5.0   # Pin version, don't use latest
+        imagePullPolicy: IfNotPresent
+
+        ports:
+        - containerPort: 8000
+          name: http
+          protocol: TCP
+
+        env:
+        - name: MODEL_ID
+          value: "meta-llama/Llama-3.1-8B-Instruct"
+        - name: HUGGING_FACE_HUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-token
+              key: token
+        - name: VLLM_WORKER_MULTIPROC_METHOD
+          value: "spawn"
+
+        args:
+        - "--model"
+        - "$(MODEL_ID)"
+        - "--host"
+        - "0.0.0.0"
+        - "--port"
+        - "8000"
+        - "--gpu-memory-utilization"
+        - "0.90"           # Leave 10% headroom
+        - "--max-model-len"
+        - "8192"
+        - "--tensor-parallel-size"
+        - "1"              # Set to GPU count for multi-GPU
+        - "--dtype"
+        - "auto"
+        - "--served-model-name"
+        - "llama-3.1-8b"   # Friendly name for the API
+
+        resources:
+          requests:
+            nvidia.com/gpu: "1"
+            memory: "20Gi"
+            cpu: "4"
+          limits:
+            nvidia.com/gpu: "1"   # Must match requests for GPU
+            memory: "30Gi"
+            cpu: "8"
+
+        # Model loading takes time — be generous with startup probe
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          failureThreshold: 30   # 30 × 10s = 5 minutes to start
+          periodSeconds: 10
+          initialDelaySeconds: 30
+
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 15
+          failureThreshold: 3
+
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          failureThreshold: 3
+
+        # Mount model cache from EFS to avoid re-downloading on pod restart
+        volumeMounts:
+        - name: model-cache
+          mountPath: /root/.cache/huggingface
+        - name: shm
+          mountPath: /dev/shm     # Required for tensor parallel
+
+      volumes:
+      - name: model-cache
+        persistentVolumeClaim:
+          claimName: model-cache-efs   # EFS-backed PVC
+      - name: shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 8Gi             # Shared memory for multi-process
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-inference
+  namespace: inference
+  labels:
+    app: vllm-inference
+spec:
+  selector:
+    app: vllm-inference
+  ports:
+  - name: http
+    port: 8000
+    targetPort: 8000
+    protocol: TCP
+  type: ClusterIP
+
+---
+# PodDisruptionBudget: ensure at least 1 replica during node drains
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: vllm-inference-pdb
+  namespace: inference
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: vllm-inference

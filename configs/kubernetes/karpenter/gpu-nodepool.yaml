@@ -1,0 +1,166 @@
+# Karpenter GPU NodePool and EC2NodeClass for AWS EKS
+# Provisions GPU instances on-demand as inference workloads require them
+
+---
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: gpu-inference
+spec:
+  # Use Deep Learning AMI — pre-configured for GPU workloads on EKS
+  # Find latest: aws ssm get-parameter --name /aws/service/eks/optimized-ami/<k8s-version>/amazon-linux-2-gpu/recommended/image_id
+  amiFamily: AL2             # Amazon Linux 2 (GPU-optimized variant selected by Karpenter)
+  amiSelectorTerms:
+  - alias: al2@latest        # Let Karpenter pick the latest GPU-optimized AL2 AMI
+
+  role: "KarpenterNodeRole-<cluster-name>"  # IAM role for nodes — replace with your role
+
+  subnetSelectorTerms:
+  - tags:
+      karpenter.sh/discovery: "<cluster-name>"    # Tag your private subnets
+
+  securityGroupSelectorTerms:
+  - tags:
+      karpenter.sh/discovery: "<cluster-name>"    # Tag your node security groups
+
+  # Block device mapping — GPU instances need more local storage for model cache
+  blockDeviceMappings:
+  - deviceName: /dev/xvda
+    ebs:
+      volumeSize: 200Gi      # 200GB — enough for 2–3 large model caches
+      volumeType: gp3
+      iops: 4000
+      throughput: 500        # MB/s
+      encrypted: true
+      deleteOnTermination: true
+
+  # User data for GPU nodes — runs after node joins cluster
+  userData: |
+    #!/bin/bash
+    # Increase Docker/containerd image pull concurrency for large model images
+    echo '{"max-concurrent-downloads": 10}' > /etc/docker/daemon.json
+    # Pre-pull NVIDIA CUDA base image to speed up first workload
+    systemctl restart docker
+
+  tags:
+    Environment: production
+    Workload: gpu-inference
+    ManagedBy: karpenter
+
+---
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: gpu-inference
+spec:
+  template:
+    metadata:
+      labels:
+        workload-type: gpu-inference
+        karpenter.sh/nodepool: gpu-inference
+      annotations:
+        # Prevents accidental deletion of nodes with running inference
+        karpenter.sh/do-not-disrupt: "false"
+
+    spec:
+      nodeClassRef:
+        apiVersion: karpenter.k8s.aws/v1
+        kind: EC2NodeClass
+        name: gpu-inference
+
+      # GPU instance selection — order doesn't matter, Karpenter picks cheapest available
+      requirements:
+      - key: kubernetes.io/arch
+        operator: In
+        values: ["amd64"]
+
+      - key: kubernetes.io/os
+        operator: In
+        values: ["linux"]
+
+      # Mix on-demand and spot for cost optimization
+      # Karpenter will prefer spot when available
+      - key: karpenter.sh/capacity-type
+        operator: In
+        values: ["on-demand", "spot"]
+
+      # GPU instance families — comment out families you don't want
+      - key: node.kubernetes.io/instance-type
+        operator: In
+        values:
+        # Small inference (7B–13B, 24GB VRAM)
+        - g5.xlarge
+        - g5.2xlarge
+        - g6.xlarge
+        - g6.2xlarge
+        # Medium inference (30B or multi-model, 96GB VRAM)
+        # - g5.12xlarge
+        # - g6.12xlarge
+        # Large inference (70B models, 320–640GB VRAM)
+        # - p4d.24xlarge
+        # - p4de.24xlarge
+
+      # GPU node taint — only GPU-aware pods schedule here
+      taints:
+      - key: nvidia.com/gpu
+        effect: NoSchedule
+
+  # Hard cap on GPU consumption — important cost control
+  limits:
+    nvidia.com/gpu: "16"     # Maximum 16 GPUs across this NodePool
+    cpu: "256"
+    memory: 1024Gi
+
+  disruption:
+    # WhenEmpty: only remove nodes when fully idle (no pods running)
+    # This is critical for inference — don't evict mid-request
+    consolidationPolicy: WhenEmpty
+    consolidateAfter: 30s    # Wait 30s after last pod leaves before terminating
+
+    # Max node age — optional, forces node rotation for security patching
+    expireAfter: 720h        # 30 days
+
+  # Weight: Karpenter uses this when multiple NodePools match
+  # Higher weight = preferred
+  weight: 100
+
+---
+# Separate NodePool for spot-only burst capacity
+# Lower weight — used when primary pool is at capacity or spot unavailable
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: gpu-inference-spot-burst
+spec:
+  template:
+    metadata:
+      labels:
+        workload-type: gpu-inference
+        karpenter.sh/nodepool: gpu-inference-spot-burst
+    spec:
+      nodeClassRef:
+        apiVersion: karpenter.k8s.aws/v1
+        kind: EC2NodeClass
+        name: gpu-inference
+      requirements:
+      - key: karpenter.sh/capacity-type
+        operator: In
+        values: ["spot"]           # Spot only
+      - key: node.kubernetes.io/instance-type
+        operator: In
+        values:
+        - g5.xlarge
+        - g5.2xlarge
+        - g6.xlarge
+        - g6.2xlarge
+        - g5.4xlarge               # Wider selection for spot availability
+        - g6.4xlarge
+      taints:
+      - key: nvidia.com/gpu
+        effect: NoSchedule
+  limits:
+    nvidia.com/gpu: "32"
+  disruption:
+    consolidationPolicy: WhenEmpty
+    consolidateAfter: 30s
+  weight: 50                       # Lower weight = secondary preference
