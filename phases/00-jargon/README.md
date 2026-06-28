@@ -252,127 +252,6 @@ Batch[A,B,C] → all finish           A finishes → D joins immediately
 
 ---
 
-### Numerical Precision Formats
-
-Before quantization makes sense, you need to understand what you're reducing *from*. Every number stored in a model — every weight, every activation — has a **precision format** that determines how many bits are used to represent it and how accurately it can encode a value.
-
-```
-Bit layout of common formats
-═════════════════════════════════════════════════════════════════
-
-FP32  (32-bit float)  — the full-precision baseline
-┌─┬────────┬───────────────────────────┐
-│S│  Exp   │        Mantissa           │  S=sign, Exp=exponent, M=mantissa
-│1│   8    │           23              │
-└─┴────────┴───────────────────────────┘
-Range: ±3.4 × 10³⁸   Precision: ~7 decimal digits
-Use:   Training (gradients need this precision). Never for inference.
-
-FP16  (16-bit float)  — half precision
-┌─┬─────┬──────────┐
-│S│ Exp │ Mantissa │
-│1│  5  │    10    │
-└─┴─────┴──────────┘
-Range: ±65,504       Precision: ~3 decimal digits
-Use:   Standard inference format. Good accuracy, half the FP32 VRAM.
-
-BF16  (Brain Float 16)  — Google's alternative 16-bit format
-┌─┬────────┬───────┐
-│S│  Exp   │  Man  │
-│1│   8    │   7   │
-└─┴────────┴───────┘
-Range: ±3.4 × 10³⁸  Precision: ~2 decimal digits (less than FP16)
-Use:   Training and modern inference. Same range as FP32 = fewer overflow
-       errors. A100/H100 have native BF16 Tensor Core support.
-
-INT8  (8-bit integer)
-┌────────────────────┐
-│  8 bits, integers  │  Range: -128 to 127  (signed)
-│  no decimal point  │         0 to 255     (unsigned)
-└────────────────────┘
-Use:   Post-training quantization. Weights converted from FP16 → INT8.
-       Halves VRAM vs FP16. Minimal accuracy loss on most tasks.
-
-INT4  (4-bit integer)
-┌──────────┐
-│  4 bits  │  Range: -8 to 7 (signed)
-└──────────┘
-Use:   Aggressive quantization (GPTQ, AWQ). Quarters VRAM vs FP16.
-       Noticeable quality loss on complex reasoning. Acceptable for many tasks.
-```
-
-**The accuracy tradeoff visualised:**
-
-```
-Representing the value 3.14159265...
-══════════════════════════════════════════════════════════
-
-FP32:  3.1415927   ← almost exact
-FP16:  3.140625    ← small rounding error
-BF16:  3.140625    ← similar to FP16
-INT8:  3.0         ← rounded to nearest integer after scaling
-INT4:  3.0 or 4.0  ← coarse, high rounding error
-```
-
-**The key insight:** models are surprisingly robust to precision reduction because:
-1. Billions of weights — individual rounding errors average out
-2. Modern quantization methods (AWQ, GPTQ) are calibration-aware: they find the best possible INT4/INT8 values to minimise accuracy loss, not just round naively
-
----
-
-### Quantization Methods
-
-With precision formats understood, these are the specific algorithms used to convert FP16 weights into lower-precision formats:
-
-```
-Quantization Method Landscape
-═══════════════════════════════════════════════════════════════════
-
-Method    Bits  Algorithm                          Best for
-──────────────────────────────────────────────────────────────────
-FP16      16    No quantization (baseline)         Max quality, have VRAM
-BF16      16    No quantization (training-native)  A100/H100, training + inference
-LLM.int8  8     Outlier-aware INT8 (bitsandbytes)  Easy INT8, slight speed penalty
-GPTQ      4     Gradient-based post-training quant  4-bit, older method
-AWQ       4     Activation-aware weight quant       4-bit, better quality than GPTQ
-SqueezeLLM 4   Sparse + 4-bit hybrid               Good for sparse models
-GGUF      4–8   llama.cpp's format (k-quants)       Local/edge, not for vLLM
-
-Recommendation ladder:
-  Have VRAM? →  FP16/BF16         (quality ceiling)
-  Tight?     →  INT8 via LLM.int8 (safe, minimal loss)
-  Very tight? → AWQ 4-bit         (best quality at 4-bit)
-  Dev/laptop? → GGUF Q4_K_M       (llama.cpp, not production)
-```
-
-**How AWQ works (why it beats GPTQ):**
-
-```
-GPTQ approach:                    AWQ approach:
-Minimise weight reconstruction    Observe which weights matter most
-error across the whole layer      by running calibration data through
-                                  the model. Protect high-salience
-Result: uniform quantization      weights with higher precision.
-        ignores which weights
-        matter most               Result: fewer important weights
-                                          get rounded aggressively
-                                          → better output quality
-```
-
-**GGUF k-quants** (llama.cpp specific, informational):
-
-```
-Q4_K_M  — 4-bit, medium quality, most popular for local use
-Q6_K    — 6-bit, near FP16 quality
-Q8_0    — 8-bit, essentially lossless
-F16     — raw FP16, same as server-side
-
-K-quants (the _K suffix) apply different bit widths to different
-weight groups based on importance — the same core insight as AWQ.
-```
-
----
-
 ### Quantization
 
 Reducing the numerical precision of model weights to save VRAM and increase throughput at the cost of some accuracy.
@@ -458,7 +337,7 @@ When VRAM is exhausted: **CUDA OOM error**, process crashes. Not graceful degrad
 
 ### HBM (High Bandwidth Memory)
 
-The specific DRAM technology used in data center GPUs (A100, H100). Much faster than consumer GPU GDDR6.
+The specific DRAM Memory technology used inside data center GPUs (A100, H100). Much faster than consumer GPU GDDR6.
 
 ```
 A100 HBM2e:  2 TB/s bandwidth
@@ -472,7 +351,7 @@ Memory bandwidth, not raw compute (TFLOPS), is usually the bottleneck for infere
 
 ### CUDA / CUDA Cores
 
-CUDA (Compute Unified Device Architecture) is NVIDIA's parallel computing platform. CUDA cores are the GPU's general-purpose compute units. Every GPU operation in deep learning runs through CUDA.
+CUDA (Compute Unified Device Architecture) is NVIDIA's parallel computing platform. CUDA cores are the GPU's general-purpose compute units. Every GPU operation in deep learning runs through CUDA. CUDA cores handle general-purpose parallel processing (like traditional graphics rendering and physics)
 
 When you see "CUDA OOM" — it means the GPU ran out of VRAM, not CPU RAM.
 
@@ -480,7 +359,7 @@ When you see "CUDA OOM" — it means the GPU ran out of VRAM, not CPU RAM.
 
 ### Tensor Cores
 
-Specialized hardware inside NVIDIA GPUs designed for matrix multiplication — the core operation in deep learning. Much faster than CUDA cores for this specific operation.
+Specialized hardware inside NVIDIA GPUs designed for matrix multiplication — the core operation in deep learning. Much faster than CUDA cores for this specific operation. Tensor cores are hardware accelerators explicitly built to process the matrix math required for deep learning and AI
 
 ```
 A100 Tensor Core performance:
@@ -526,7 +405,9 @@ p4d/p5 instances use NVLink. g5 instances use PCIe.
 
 ### MIG (Multi-Instance GPU)
 
-Hardware partitioning of A100/H100 GPUs into isolated slices. Each slice has its own VRAM, compute, and memory bandwidth — full hardware isolation.
+Multi-Instance GPU (MIG) is an NVIDIA architecture feature that divides a single physical GPU into up to seven discrete, independent hardware instances. Each instance gets its own dedicated Streaming Multiprocessors (SMs), cache, and memory. This prevents noisy neighbor issues and ensures strict security.
+
+When enabled, the physical GPU allocates a precise fraction of its compute and VRAM to each MIG instance. For example, on a large 80GB GPU, you could create multiple 10GB or 20GB instances. Each of these partitions functions essentially as its own independent GPU, allowing multiple teams or diverse workloads to run simultaneously without interference
 
 ```
 A100 80GB → up to 7× MIG slices:
