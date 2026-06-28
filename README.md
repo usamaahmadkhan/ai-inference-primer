@@ -50,6 +50,9 @@ This guide gives you that, in the order it matters.
 │                  SRE → AI Infrastructure                        │
 └─────────────────────────────────────────────────────────────────┘
 
+Phase 0: Jargon  ──► Start here. Vocabulary before everything else.
+     │
+     ▼
 Phase 1          Phase 2          Phase 3          Phase 4
 Mental           Model            K8s for          AWS AI
 Models    ──►    Serving   ──►    AI        ──►    Stack
@@ -67,6 +70,9 @@ Total: ~22–30 weeks at serious part-time pace
 ---
 
 ## Phase Index
+
+### [Phase 0: Jargon](./phases/00-jargon/) `Read first`
+Vocabulary reference for every term you'll encounter in this guide. Tokens, KV cache, quantization, TTFT, tensor parallelism, DCGM, LoRA, RAG — all defined with infrastructure context. Skim once, return as needed.
 
 ### [Phase 1: Mental Models](./phases/01-mental-models/) `2–3 weeks`
 Understand what you're operating before you operate it. GPU architecture, inference mechanics, the KV cache, quantization. If you skip this phase, you'll be debugging blindly.
