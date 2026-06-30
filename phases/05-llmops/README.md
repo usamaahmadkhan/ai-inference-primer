@@ -259,6 +259,61 @@ Developer edits prompt
 
 ---
 
+## Evaluation Frameworks
+
+The eval gate in the fine-tuning pipeline above is doing real work, but "run eval suite" glosses over a real engineering discipline. Evals are the test suite for a system that doesn't fail loudly — a regressed model still returns 200 OK with confident, plausible, wrong output. Without evals you're flying blind between deploys.
+
+```
+Why evals are not optional
+══════════════════════════════════════════════════════════
+
+Traditional software regression          Model regression
+─────────────────────────────             ─────────────────────────────
+Unit test fails                          Output looks fine, reads fine,
+→ CI blocks the merge                    is subtly worse
+→ loud, deterministic signal             → no exception, no failed
+                                            health check, no alert
+                                          → ships straight to prod
+                                          → shows up as a drop in a
+                                            product metric weeks later
+```
+
+### Open-source eval tooling
+
+Two repos come up constantly and solve different problems — know which one you need.
+
+**[OpenAI Evals](https://github.com/openai/evals)** is a framework plus a registry of benchmark specs. An eval is a YAML file: an input, a grading method (string match, model-graded, or custom), and a dataset. It supports both single-turn completions and, via its Completion Function Protocol, prompt chains and tool-using agents. This is the tool to reach for when you need a CI-style harness that runs a battery of input/output checks against every model or prompt change — directly pluggable into the gate shown above.
+
+**[Anthropic evals](https://github.com/anthropics/evals)** is a different category of artifact: model-written behavioral datasets from the "Discovering Language Model Behaviors with Model-Written Evaluations" paper. It's not a serving harness — it's a dataset collection for probing things like sycophancy, persona consistency, and advanced-AI-risk-adjacent behaviors (power-seeking tendencies, self-preservation framing). Useful as a reference for behavioral/safety regression testing, not as your primary CI eval engine.
+
+```
+Tool                        Category                  Use it for
+──────────────────────────────────────────────────────────────────────────
+OpenAI Evals                Framework + registry       Your CI eval gate;
+                                                        custom task definitions;
+                                                        agent/chain evaluation
+                                                        via Completion Functions
+
+Anthropic evals             Behavioral dataset          Safety/behavioral
+                                                        regression checks;
+                                                        sycophancy, persona,
+                                                        risk-indicator probes
+
+MLflow eval (built-in)      Tracking-integrated         Lightweight checks tied
+                                                        directly to a registered
+                                                        model version (what the
+                                                        Fine-Tuning Pipelines
+                                                        section above uses)
+```
+
+### Agent evals are a harder problem
+
+Everything above assumes single-turn input → output → grade. The moment you're evaluating an agent — something that calls tools, modifies state across multiple turns, and can find creative solutions a rigid grader didn't anticipate — the eval design gets materially harder. Anthropic's [Demystifying evals for AI agents](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents) is the most useful field guide on this available right now: it defines the vocabulary you need (task, trial, grader, transcript, outcome, eval harness vs agent harness), covers the three grader types (code-based, model-based, human) and when to combine them, and introduces `pass@k` vs `pass^k` for handling the non-determinism that agents introduce into your eval scores.
+
+This matters even if you're not building agents yet, because the LLMOps gate described in this phase — eval suite → score vs baseline → pass/fail — is the single-turn special case of exactly this framework. See [Phase 7: Advanced Topics](../07-advanced-topics/) for where agent evaluation connects to agent infrastructure specifically.
+
+---
+
 ## CI/CD for Models
 
 ```
@@ -289,12 +344,14 @@ Model CI/CD Pipeline
 
 ## Resources
 
-See [resources.md](./resources.md) for the full curated list.
+See [resources.md](./resources.md) for the full curated list with descriptions.
 
 **Essential:**
 1. Full Stack LLM Bootcamp — free on YouTube, best practical LLMOps content available
 2. Weights & Biases free courses — MLflow and W&B are interchangeable concepts
 3. Langfuse docs — self-host it, don't send prod traces to SaaS
+4. [Demystifying evals for AI agents](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents) — Anthropic, Jan 2026. The eval vocabulary and grader taxonomy in this phase's gate design comes directly from this framework.
+5. [OpenAI Evals](https://github.com/openai/evals) — clone it, read `docs/build-eval.md`, run the existing registry before writing your own YAML specs.
 
 ---
 
