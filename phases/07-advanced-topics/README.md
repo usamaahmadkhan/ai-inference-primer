@@ -250,6 +250,81 @@ Infrastructure concerns:
 
 ---
 
+## Designing and Evaluating Agents
+
+The diagram above shows the infrastructure shape. It doesn't tell you when an agent is the right architecture, how to design the tools that orchestrator calls, or how to know whether the thing you built actually works. Three Anthropic engineering posts cover exactly that gap, and they're written for builders, not researchers — worth reading in full, not just skimming the summary below.
+
+### When to build an agent at all (and the 5 patterns when you do)
+
+**[Building effective agents](https://www.anthropic.com/engineering/building-effective-agents)** (Schluntz & Zhang) draws the architectural line that the "Agent Orchestrator" box in the diagram above glosses over: **workflows** (LLMs and tools orchestrated through code paths you write) versus **agents** (the LLM dynamically directs its own tool use and control flow). Workflows give you predictability and debuggability. Agents give you flexibility at the cost of latency, cost, and compounding error risk. The core recommendation is to find the simplest pattern that works and only add agentic autonomy when the task genuinely can't be hardcoded into a fixed path.
+
+```
+The five workflow patterns (use before reaching for a full agent)
+═══════════════════════════════════════════════════════════════════
+
+Prompt Chaining          Routing                Parallelization
+──────────────────       ──────────────────     ──────────────────
+Step 1 → Step 2 → ...    Classify input →       Run N calls at once
+Each step's output       send to specialized    → aggregate results
+feeds the next            prompt/model path     (voting, sectioning)
+
+Orchestrator-Workers     Evaluator-Optimizer
+──────────────────       ──────────────────
+One LLM breaks down      Generator produces,
+task, delegates to       evaluator critiques,
+workers dynamically      loop until criteria met
+
+  Use these for:                    Reach for a full autonomous
+  predictable subtask structure,     agent only when:
+  bounded complexity,                the path can't be predicted
+  need for debuggability             in advance, and the cost of
+                                    autonomy is justified by the
+                                    task's value
+```
+
+The post's Appendix 2 ("Prompt Engineering your Tools") is the seed that the next article expands into a full standalone piece.
+
+### Designing the tools your agent calls
+
+**[Writing effective tools for AI agents — using AI agents](https://www.anthropic.com/engineering/writing-tools-for-agents)** treats tool design as a distinct engineering discipline, not an afterthought to API wrapping. The framing that matters most: a tool definition is a contract between a deterministic system and a non-deterministic caller, and every word in the name, description, and parameter docs is effectively a prompt that shapes how reliably the agent calls it correctly.
+
+```
+Tool design checklist (from the article)
+══════════════════════════════════════════════════════════
+
+1. High leverage           Don't wrap every API 1:1. Build tools that
+                           collapse multi-step API choreography into
+                           one call the agent can reason about simply.
+
+2. Clear namespacing       Distinct, unambiguous names. An agent
+                           choosing between similarly-named tools is
+                           choosing somewhat randomly.
+
+3. Meaningful responses    Return human-readable fields, not raw IDs.
+                           The agent reasons over what you give back —
+                           give it something reasoning-friendly.
+
+4. Token efficiency        Paginate, truncate, filter by default.
+                           Claude Code caps tool responses at 25K
+                           tokens for exactly this reason.
+
+5. Prompt-engineer specs   Treat the tool description like you'd brief
+                           a new hire: state the implicit context
+                           (formats, terminology, relationships)
+                           explicitly. Iterate on it like a prompt,
+                           because it is one.
+```
+
+The "using AI agents" half of the title is the other half of the point: the article's recommended loop is Prototype → Evaluate → Collaborate, where Claude itself is used to read transcripts of its own tool-calling failures and suggest description fixes — a genuinely useful technique once you have an eval harness in place to measure whether the fix helped.
+
+### Evaluating what you built
+
+This is where Phase 5's evaluation framework gets agent-specific teeth. **[Demystifying evals for AI agents](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents)** explains precisely why the "Infrastructure concerns" list above includes unpredictable cost and growing context: agents act over many turns, modify state, and can find valid solutions a rigid grader didn't anticipate (the article's example: Claude Opus 4.5 "failed" a flight-booking benchmark by finding a legitimate policy loophole that produced a better outcome for the user than the intended answer).
+
+The practical takeaway for infrastructure engineers specifically: build your eval harness to verify **outcome** (the actual end-state in the environment — did the database row get written, not just did the transcript say it did) separately from **process** (did it use a reasonable number of tool calls, stay within turn limits, follow expected patterns). Grading the path an agent took too strictly produces brittle evals that punish creativity; grading only the outcome risks missing process problems like runaway tool-calling loops that blow your cost budget. Most production agent evals combine code-based graders (state checks, tool-call verification) with model-based graders (rubric scoring) for exactly this reason — see [Phase 5: Evaluation Frameworks](../05-llmops/#evaluation-frameworks) for the grader taxonomy this builds on.
+
+---
+
 ## Multi-Tenant LLM Platforms
 
 This is where your SRE background pays off hardest. ML engineers are bad at this. You're not.
@@ -294,12 +369,15 @@ Internal LLM Platform Architecture
 
 ## Resources
 
-See [resources.md](./resources.md) for the full curated list.
+See [resources.md](./resources.md) for the full curated list with descriptions.
 
 **Essential:**
-1. Qdrant docs — Architecture section specifically
-2. Anthropic MCP Specification — the emerging standard for agent tool use
-3. AI Infrastructure Alliance — community, stay current
+1. [Building effective agents](https://www.anthropic.com/engineering/building-effective-agents) — Anthropic. Read before writing any agent orchestration code. The workflows-vs-agents distinction will save you from over-building.
+2. [Writing effective tools for AI agents — using AI agents](https://www.anthropic.com/engineering/writing-tools-for-agents) — Anthropic. Tool descriptions are prompts; treat them that way.
+3. [Demystifying evals for AI agents](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents) — Anthropic. How to know if the agent you built actually works.
+4. Qdrant docs — Architecture section specifically
+5. Anthropic MCP Specification — the emerging standard for agent tool use
+6. AI Infrastructure Alliance — community, stay current
 
 ---
 
