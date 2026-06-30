@@ -171,6 +171,12 @@ If you need a refresher on any of these, do that first. This guide does not cove
 
 ---
 
+## Industry Context
+
+This guide is deliberately infrastructure-first and somewhat abstracted from any single vendor's product surface. For a sense of what's actually being deployed in production right now — which industries, what scale, what problems are getting solved — Anthropic's [Customer Stories](https://claude.com/customers) page is a useful reality check against the theory in this repo. Worth a periodic skim, not a one-time read; it's mostly post-deployment writeups, not vendor pitch decks.
+
+---
+
 ## Contributing
 
 Found an error, a better pattern, or something that's gone stale? Open a PR.
